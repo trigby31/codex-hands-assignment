@@ -1,1 +1,108 @@
-
+"""
+Ames Housing: Which neighborhoods sell for more or less than expected
+given their above-ground living area?
+ 
+Run from the repository root:
+    python analysis/analysis.py
+ 
+Requires: pandas, numpy, matplotlib
+"""
+from pathlib import Path
+ 
+import numpy as np
+import pandas as pd
+import matplotlib
+ 
+matplotlib.use("Agg")  # save charts without opening a window
+import matplotlib.pyplot as plt
+ 
+ROOT = Path(__file__).resolve().parent.parent
+DATA = ROOT / "AmesHousing.csv"
+OUT = ROOT / "analysis"
+OUT.mkdir(exist_ok=True)
+ 
+MAX_AREA = 4000   # drop very large houses (author-recommended outlier removal)
+MIN_SALES = 20    # neighborhoods with fewer sales are too noisy to rank
+COLS = ["SalePrice", "Gr Liv Area", "Neighborhood"]
+ 
+# ---------------------------------------------------------------
+# Step 1: Load and explore
+# ---------------------------------------------------------------
+df = pd.read_csv(DATA)
+print(f"Raw data: {df.shape[0]} rows, {df.shape[1]} columns\n")
+print("Data types:")
+print(df[COLS].dtypes, "\n")
+print("Missing values:")
+print(df[COLS].isna().sum(), "\n")
+ 
+# ---------------------------------------------------------------
+# Step 2: Clean
+# ---------------------------------------------------------------
+before = len(df)
+df = df.dropna(subset=COLS)
+df = df[df["Gr Liv Area"] <= MAX_AREA].copy()
+print(f"Removed {before - len(df)} rows (missing values or Gr Liv Area > {MAX_AREA}).")
+print(f"Rows remaining: {len(df)}\n")
+ 
+# ---------------------------------------------------------------
+# Step 3: Regression of SalePrice on Gr Liv Area
+# ---------------------------------------------------------------
+x = df["Gr Liv Area"].to_numpy(dtype=float)
+y = df["SalePrice"].to_numpy(dtype=float)
+ 
+slope, intercept = np.polyfit(x, y, 1)
+predicted = intercept + slope * x
+df["predicted"] = predicted
+df["residual"] = y - predicted  # positive = sold for more than size predicts
+ 
+r_squared = 1 - ((y - predicted) ** 2).sum() / ((y - y.mean()) ** 2).sum()
+print(f"Slope: ${slope:,.2f} per square foot")
+print(f"Intercept: ${intercept:,.0f}")
+print(f"R-squared: {r_squared:.3f}\n")
+ 
+# ---------------------------------------------------------------
+# Step 4: Neighborhood summary table
+# ---------------------------------------------------------------
+summary = df.groupby("Neighborhood").agg(
+    sales=("SalePrice", "size"),
+    median_price=("SalePrice", "median"),
+    mean_residual=("residual", "mean"),
+)
+ 
+excluded = summary[summary["sales"] < MIN_SALES]
+print(f"Excluded neighborhoods (< {MIN_SALES} sales):")
+print(excluded["sales"].to_string(), "\n")
+ 
+summary = (
+    summary[summary["sales"] >= MIN_SALES]
+    .sort_values("mean_residual", ascending=False)
+    .round({"median_price": 0, "mean_residual": 0})
+)
+summary.to_csv(OUT / "neighborhood_summary.csv")
+print("Neighborhood summary (highest mean residual first):")
+print(summary.to_string(), "\n")
+ 
+# ---------------------------------------------------------------
+# Step 5: Chart
+# ---------------------------------------------------------------
+# barh draws bottom-up, so sort ascending to put the top performer at the top
+plot_data = summary.sort_values("mean_residual")
+colors = ["#2a7ab9" if v >= 0 else "#c0504d" for v in plot_data["mean_residual"]]
+ 
+fig, ax = plt.subplots(figsize=(8, 0.35 * len(plot_data) + 1.5))
+ax.barh(plot_data.index, plot_data["mean_residual"] / 1000, color=colors)
+ax.axvline(0, color="black", linewidth=0.8)
+ax.set_xlabel("Mean residual ($ thousands): actual minus price predicted from living area")
+ax.set_ylabel("Neighborhood")
+ax.set_title("Ames neighborhoods: sale price above or below what size predicts")
+fig.tight_layout()
+fig.savefig(OUT / "neighborhood_residuals.png", dpi=150)
+print(f"Chart saved to {OUT / 'neighborhood_residuals.png'}\n")
+ 
+# ---------------------------------------------------------------
+# Step 6: Verification - recompute NAmes mean residual independently
+# ---------------------------------------------------------------
+names = df[df["Neighborhood"] == "NAmes"]
+check = (names["SalePrice"] - (intercept + slope * names["Gr Liv Area"])).mean()
+print(f"NAmes mean residual, recomputed: ${check:,.0f}")
+print(f"NAmes mean residual, from table: ${summary.loc['NAmes', 'mean_residual']:,.0f}")
